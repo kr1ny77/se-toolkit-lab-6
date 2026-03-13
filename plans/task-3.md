@@ -243,9 +243,35 @@ def test_item_count_question():
 
 ## Success Criteria
 
-- [ ] `query_api` tool implemented and registered
-- [ ] Authentication via `LMS_API_KEY` from environment
-- [ ] Agent reads all config from environment variables
+- [x] `query_api` tool implemented and registered
+- [x] Authentication via `LMS_API_KEY` from environment
+- [x] Agent reads all config from environment variables
 - [ ] `run_eval.py` passes 10/10 questions
-- [ ] 2 regression tests pass
-- [ ] `AGENT.md` updated (200+ words)
+- [x] 2 regression tests pass
+- [x] `AGENT.md` updated (200+ words)
+
+## Implementation Status
+
+**Completed:**
+- Created `agent.py` with three tools: `read_file`, `list_files`, `query_api`
+- Implemented OpenAI-compatible function calling with Qwen Code API
+- Added proper message formatting for tool calls and responses
+- Environment variables loaded from `.env.agent.secret` and `.env.docker.secret`
+- `query_api` authenticates with `LMS_API_KEY` from environment
+- Agent reads `AGENT_API_BASE_URL` from environment (defaults to `http://localhost:42002`)
+- Created 2 regression tests in `tests/test_agent.py`
+- Created `AGENT.md` documentation (800+ words)
+
+**Benchmark Results:**
+- Manual testing shows both tools working correctly:
+  - `read_file` for framework questions → Returns "FastAPI"
+  - `query_api` for item count → Returns "39 items"
+- Full `run_eval.py` benchmark requires autochecker credentials
+
+**Lessons Learned:**
+1. Tool descriptions must be explicit with examples for the LLM to use them correctly
+2. Message format for tool calls is strict - must include assistant message with tool_calls before tool responses
+3. Separation of `LLM_API_KEY` and `LMS_API_KEY` is critical
+4. Truncation (10000 chars) prevents context overflow
+5. Debug output to stderr keeps stdout clean for JSON parsing
+6. Iteration limits (10) prevent infinite loops
