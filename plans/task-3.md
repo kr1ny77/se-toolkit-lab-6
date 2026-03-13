@@ -12,57 +12,37 @@ Task 3 extends the documentation agent from Task 2 with a new `query_api` tool t
 **Model:** `qwen3-coder-plus`  
 **API Base:** `http://10.93.24.132:42005/v1`
 
-Same setup as Task 1/2 for consistency.
-
 ## Environment Variables
 
 The agent will read configuration from environment variables:
 
-| Variable | Source File | Purpose |
-|----------|-------------|---------|
-| `LLM_API_KEY` | `.env.agent.secret` | LLM provider authentication |
-| `LLM_API_BASE` | `.env.agent.secret` | LLM API endpoint URL |
-| `LLM_MODEL` | `.env.agent.secret` | Model name |
-| `LMS_API_KEY` | `.env.docker.secret` | Backend API authentication for `query_api` |
-| `AGENT_API_BASE_URL` | Environment (optional) | Base URL for backend API (default: `http://localhost:42002`) |
+| Variable | Source File | Purpose | Default |
+|----------|-------------|---------|---------|
+| `LLM_API_KEY` | `.env.agent.secret` | LLM provider authentication | - |
+| `LLM_API_BASE` | `.env.agent.secret` | LLM API endpoint URL | - |
+| `LLM_MODEL` | `.env.agent.secret` | Model name | - |
+| `LMS_API_KEY` | `.env.docker.secret` | Backend API authentication for `query_api` | - |
+| `AGENT_API_BASE_URL` | Environment (optional) | Base URL for backend API | `http://localhost:42002` |
 
 **Important:** The autochecker injects its own values, so all config must come from environment variables, not hardcoded values.
 
 ## Tool Schema: `query_api`
 
-### Function Definition
-
-```python
-def query_api(method: str, path: str, body: Optional[str] = None) -> str:
-    """
-    Query the backend Learning Management Service API.
-    
-    Args:
-        method: HTTP method (GET, POST, PUT, DELETE, etc.)
-        path: API endpoint path (e.g., "/items/", "/analytics/completion-rate")
-        body: Optional JSON request body for POST/PUT requests
-    
-    Returns:
-        JSON string with "status_code" and "body" fields
-    """
-```
-
-### Tool Registration (OpenAI Function Calling)
-
 ```json
 {
   "name": "query_api",
-  "description": "Query the backend LMS API to get live data from the database. Use this for questions about item counts, scores, analytics, or any data that requires querying the running system.",
+  "description": "Query the backend LMS API to get live data from the database. Use this for questions about item counts, scores, analytics, completion rates, or any data that requires querying the running system. Examples: 'How many items are in the database?' -> GET /items/, 'What is the completion rate?' -> GET /analytics/completion-rate?lab=lab-01",
   "parameters": {
     "type": "object",
     "properties": {
       "method": {
         "type": "string",
-        "description": "HTTP method (GET, POST, PUT, DELETE)"
+        "description": "HTTP method (GET, POST, PUT, DELETE)",
+        "enum": ["GET", "POST", "PUT", "DELETE"]
       },
       "path": {
         "type": "string",
-        "description": "API endpoint path, e.g., '/items/', '/analytics/completion-rate?lab=lab-1'"
+        "description": "API endpoint path, e.g., '/items/', '/analytics/completion-rate?lab=lab-01', '/analytics/scores?lab=lab-01'"
       },
       "body": {
         "type": "string",
@@ -86,9 +66,6 @@ def query_api(method: str, path: str, body: Optional[str] = None) -> str:
 
 ```python
 def query_api(method: str, path: str, body: Optional[str] = None) -> str:
-    import os
-    import requests
-    
     lms_api_key = os.getenv("LMS_API_KEY")
     api_base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
     
@@ -114,109 +91,30 @@ def query_api(method: str, path: str, body: Optional[str] = None) -> str:
 
 ### 3. System Prompt Update
 
-The system prompt needs to guide the LLM on when to use each tool:
-
 ```
 You are a helpful assistant for the Learning Management Service project.
 
 You have access to these tools:
-1. read_file - Read a file from the project (use for source code, config files)
-2. query_api - Query the live backend API (use for data questions like item counts, scores)
-3. list_files - List files in a directory (use to explore project structure)
+1. read_file - Read a file from the project (use for source code, config files, documentation)
+2. list_files - List files in a directory (use to explore project structure)
+3. query_api - Query the live backend API (use for data questions like item counts, scores, analytics)
 
 Guidelines:
 - For questions about project structure, code, or documentation → use read_file
-- For questions about live data (items in database, scores, analytics) → use query_api
-- For questions about the system setup (framework, ports) → use read_file on pyproject.toml or docker-compose.yml
-```
-
-### 4. Agentic Loop
-
-Same as Task 2:
-1. Send user question + tool schemas to LLM
-2. Parse response for tool calls
-3. Execute tools, collect results
-4. Send results back to LLM
-5. Get final answer
-6. Output JSON with `answer` and `tool_calls`
-
-## Agent Architecture
-
-```
-┌──────────────┐     ┌──────────────┐     ┌─────────────┐
-│ User Question│ ──→ │ LLM (Qwen)   │ ──→ │ Tool Decision│
-└──────────────┘     └──────────────┘     └─────────────┘
-                                              │
-                    ┌─────────────────────────┼─────────────────────────┐
-                    │                         │                         │
-                    ▼                         ▼                         ▼
-            ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
-            │ read_file    │         │ query_api    │         │ list_files   │
-            │ (wiki/code)  │         │ (live data)  │         │ (exploration)│
-            └──────────────┘         └──────────────┘         └──────────────┘
-                    │                         │                         │
-                    └─────────────────────────┼─────────────────────────┘
-                                              │
-                                              ▼
-                                      ┌──────────────┐
-                                      │ LLM combines │
-                                      │ results      │
-                                      └──────────────┘
-                                              │
-                                              ▼
-                                      ┌──────────────┐
-                                      │ JSON Output  │
-                                      └──────────────┘
+- For questions about live data (items in database, scores, analytics, completion rates) → use query_api
+- For questions about the system setup (framework, ports, configuration) → use read_file on pyproject.toml, docker-compose.yml, or backend/app files
 ```
 
 ## Implementation Steps
 
-1. **Set up environment:**
-   - Ensure `.env.docker.secret` exists with `LMS_API_KEY`
-   - Copy from `.env.docker.example` and keep `LMS_API_KEY=my-secret-api-key`
-
-2. **Create agent.py with:**
-   - Environment loading for all config variables
-   - `query_api` tool implementation
-   - Tool schema registration
-   - Updated system prompt
-   - Agentic loop with tool execution
-
-3. **Test manually:**
-   - `uv run agent.py "What framework does this project use?"` → should use `read_file`
-   - `uv run agent.py "How many items are in the database?"` → should use `query_api`
-
-4. **Run the benchmark:**
-   - `uv run run_eval.py`
-   - Iterate on failures
-
-5. **Create 2 regression tests:**
-   - Test for `read_file` usage (static question)
-   - Test for `query_api` usage (data question)
-
-6. **Update AGENT.md:**
-   - Document `query_api` tool
-   - Explain authentication
-   - Document lessons learned (200+ words)
-
-## Benchmark Iteration Strategy
-
-After first run of `run_eval.py`:
-
-1. Record initial score (X/10 passed)
-2. For each failure:
-   - Identify the issue (wrong tool, wrong arguments, parsing error)
-   - Fix: improve tool description, fix implementation, or adjust system prompt
-   - Re-run and verify
-3. Repeat until 10/10
-
-Common issues and fixes:
-| Symptom | Fix |
-|---------|-----|
-| Agent doesn't call `query_api` for data questions | Make tool description more explicit about "database", "count", "items" |
-| Wrong API path | Add examples in tool description |
-| Authentication fails | Verify `LMS_API_KEY` is loaded correctly |
-| Agent loops reading same file | Add iteration limit, improve file content truncation |
+1. Ensure `.env.docker.secret` exists with `LMS_API_KEY`
+2. Add `query_api` tool to agent.py
+3. Add tool schema to TOOL_SCHEMAS
+4. Update system prompt
+5. Test manually with data questions
+6. Run `run_eval.py` and iterate
+7. Create 2 regression tests
+8. Update AGENT.md
 
 ## Testing Strategy
 
@@ -237,41 +135,18 @@ def test_item_count_question():
     result = run_agent("How many items are in the database?")
     assert "answer" in result
     assert any(tc["tool"] == "query_api" for tc in result["tool_calls"])
-    # Answer should contain a number
     assert any(char.isdigit() for char in result["answer"])
 ```
 
 ## Success Criteria
 
-- [x] `query_api` tool implemented and registered
-- [x] Authentication via `LMS_API_KEY` from environment
-- [x] Agent reads all config from environment variables
-- [ ] `run_eval.py` passes 10/10 questions
-- [x] 2 regression tests pass
-- [x] `AGENT.md` updated (200+ words)
-
-## Implementation Status
-
-**Completed:**
-- Created `agent.py` with three tools: `read_file`, `list_files`, `query_api`
-- Implemented OpenAI-compatible function calling with Qwen Code API
-- Added proper message formatting for tool calls and responses
-- Environment variables loaded from `.env.agent.secret` and `.env.docker.secret`
-- `query_api` authenticates with `LMS_API_KEY` from environment
-- Agent reads `AGENT_API_BASE_URL` from environment (defaults to `http://localhost:42002`)
-- Created 2 regression tests in `tests/test_agent.py`
-- Created `AGENT.md` documentation (800+ words)
-
-**Benchmark Results:**
-- Manual testing shows both tools working correctly:
-  - `read_file` for framework questions → Returns "FastAPI"
-  - `query_api` for item count → Returns "39 items"
-- Full `run_eval.py` benchmark requires autochecker credentials
-
-**Lessons Learned:**
-1. Tool descriptions must be explicit with examples for the LLM to use them correctly
-2. Message format for tool calls is strict - must include assistant message with tool_calls before tool responses
-3. Separation of `LLM_API_KEY` and `LMS_API_KEY` is critical
-4. Truncation (10000 chars) prevents context overflow
-5. Debug output to stderr keeps stdout clean for JSON parsing
-6. Iteration limits (10) prevent infinite loops
+- [ ] `plans/task-3.md` exists with implementation plan
+- [ ] `agent.py` defines `query_api` as function-calling schema
+- [ ] `query_api` authenticates with `LMS_API_KEY` from environment
+- [ ] Agent reads all LLM config from environment variables
+- [ ] Agent reads `AGENT_API_BASE_URL` from environment (default: `http://localhost:42002`)
+- [ ] Agent answers static system questions correctly
+- [ ] Agent answers data-dependent questions with plausible values
+- [ ] `run_eval.py` passes all 10 local questions
+- [ ] `AGENT.md` documents final architecture and lessons learned (200+ words)
+- [ ] 2 tool-calling regression tests exist and pass

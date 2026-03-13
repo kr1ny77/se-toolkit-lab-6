@@ -2,7 +2,7 @@
 
 ## Overview
 
-This agent is a CLI tool that uses an LLM (Large Language Model) with tool-calling capabilities to answer questions about the Learning Management Service project. It can read documentation files and explore the project structure using two tools: `read_file` and `list_files`.
+This agent is a CLI tool that uses an LLM (Large Language Model) with tool-calling capabilities to answer questions about the Learning Management Service project. It can read documentation files, explore the project structure, and query the live backend API for data-dependent questions.
 
 ## LLM Provider
 
@@ -22,11 +22,11 @@ Qwen Code provides 1000 free requests per day and works from Russia without requ
                                                  │
                        ┌─────────────────────────┼─────────────────────────┐
                        │                         │                         │
-                       ▼                         ▼                         │
-               ┌──────────────┐         ┌──────────────┐                    │
-               │ read_file    │         │ list_files   │                    │
-               │ (wiki/code)  │         │ (exploration)│                    │
-               └──────────────┘         └──────────────┘                    │
+                       ▼                         ▼                         ▼
+               ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+               │ read_file    │         │ query_api    │         │ list_files   │
+               │ (wiki/code)  │         │ (live data)  │         │ (exploration)│
+               └──────────────┘         └──────────────┘         └──────────────┘
                        │                         │                         │
                        └─────────────────────────┼─────────────────────────┘
                                                  │
@@ -49,8 +49,8 @@ Qwen Code provides 1000 free requests per day and works from Russia without requ
 
 The main CLI entry point with the following components:
 
-1. **Environment Loading** - Loads `.env.agent.secret` using `python-dotenv`
-2. **Tool Implementations** - Two tools: `read_file`, `list_files`
+1. **Environment Loading** - Loads `.env.agent.secret` and `.env.docker.secret` using `python-dotenv`
+2. **Tool Implementations** - Three tools: `read_file`, `list_files`, `query_api`
 3. **Tool Schemas** - OpenAI-compatible function calling schemas
 4. **Agentic Loop** - Iteratively calls LLM, executes tools, and collects results
 5. **JSON Output** - Returns structured JSON with `answer`, `source`, and `tool_calls` fields
@@ -75,131 +75,93 @@ Lists files in a directory.
 - **Use cases:** Exploring project structure when exact file path is unknown
 - **Security:** Prevents access to directories outside project root
 
-### Path Security
+#### `query_api`
 
-Both tools validate paths to prevent directory traversal attacks:
+Queries the backend Learning Management Service API.
 
-```python
-def validate_path(path: str) -> Path:
-    """Validate and resolve a relative path within project root."""
-    full_path = (PROJECT_ROOT / path).resolve()
-    
-    # Security check: ensure path is within project root
-    if not str(full_path).startswith(str(PROJECT_ROOT.resolve())):
-        raise ValueError(f"Access denied: path outside project root")
-    
-    return full_path
-```
+- **Parameters:** 
+  - `method` (string) - HTTP method (GET, POST, PUT, DELETE)
+  - `path` (string) - API endpoint path
+  - `body` (string, optional) - JSON request body for POST/PUT
+- **Returns:** JSON string with `status_code` and `body` fields
+- **Authentication:** Uses `LMS_API_KEY` from `.env.docker.secret`
+- **Use cases:** Getting item counts, scores, analytics, completion rates
 
-### Environment Variables (`.env.agent.secret`)
+### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `LLM_API_KEY` | API key for authentication |
-| `LLM_API_BASE` | Base URL of the LLM API endpoint |
-| `LLM_MODEL` | Model name to use (e.g., `qwen3-coder-plus`) |
+| Variable | Source File | Purpose | Default |
+|----------|-------------|---------|---------|
+| `LLM_API_KEY` | `.env.agent.secret` | LLM provider authentication | - |
+| `LLM_API_BASE` | `.env.agent.secret` | LLM API endpoint URL | - |
+| `LLM_MODEL` | `.env.agent.secret` | Model name | - |
+| `LMS_API_KEY` | `.env.docker.secret` | Backend API authentication | - |
+| `AGENT_API_BASE_URL` | Environment | Base URL for backend API | `http://localhost:42002` |
 
-## Agentic Loop
+**Important:** The autochecker injects its own values for these variables. The agent must read all configuration from environment variables, not hardcoded values.
 
-The agentic loop is the core of the agent's reasoning process:
-
-1. **Send question to LLM** - Include user question + tool schemas
-2. **Parse response** - Check for `tool_calls` in response
-3. **If tool calls exist:**
-   - Execute each tool with provided arguments
-   - Append tool results as "tool" role messages
-   - Add assistant message with tool_calls to history
-   - Go back to step 1
-4. **If no tool calls (final answer):**
-   - Extract answer text
-   - Extract source (file path from `read_file` calls)
-   - Output JSON and exit
-5. **If max iterations (10) reached:**
-   - Stop looping
-   - Use whatever answer we have
-
-### Message Format
-
-```python
-messages = [
-    {"role": "system", "content": SYSTEM_PROMPT},
-    {"role": "user", "content": question},
-    # After LLM responds with tool_calls:
-    {"role": "assistant", "content": None, "tool_calls": [...]},
-    # After executing each tool:
-    {"role": "tool", "tool_call_id": "<id>", "content": "<result>"},
-    # Then send back to LLM for next iteration
-]
-```
-
-## System Prompt Strategy
+### System Prompt
 
 The system prompt guides the LLM on tool usage:
 
-```
-You are a helpful assistant for the Learning Management Service project.
+- **For project structure, code, or documentation** → use `read_file`
+- **For live data (items, scores, analytics)** → use `query_api`
+- **For system setup questions (framework, ports)** → use `read_file` on config files
+- **When file path is unknown** → use `list_files` to explore
 
-You have access to these tools:
-1. read_file - Read a file from the project (use for documentation, source code, config files)
-2. list_files - List files in a directory (use to explore project structure)
+### Agentic Loop
 
-Guidelines:
-- For questions about documentation → use list_files to find the relevant wiki file, then read_file
-- Always cite your sources: mention the file path in your answer
-- Think step by step: first explore with list_files if needed, then read specific files with read_file
-```
+1. Send user question + tool schemas to LLM
+2. Parse response for tool calls
+3. Execute each tool, collect results
+4. Add tool responses to message history
+5. Send results back to LLM
+6. Repeat until LLM returns final answer (no tool calls)
+7. Output JSON with `answer`, `source`, and `tool_calls`
 
-The prompt encourages:
-- **Exploration first** - Use `list_files` to discover relevant files
-- **Then read** - Use `read_file` to get specific content
-- **Cite sources** - Include file paths in answers
-
-## Usage
-
-```bash
-# Documentation question
-uv run agent.py "How do you resolve a merge conflict?"
-
-# Exploration question
-uv run agent.py "What files are in the wiki?"
-```
-
-## Output Format
+### Output Format
 
 ```json
 {
   "answer": "The LLM's answer to the question",
-  "source": "wiki/git.md",
+  "source": "backend/app/main.py",
   "tool_calls": [
     {
-      "tool": "list_files",
-      "args": {"dir_path": "wiki"},
-      "result": "api.md\narchitectural-views.md\n..."
-    },
-    {
-      "tool": "read_file",
-      "args": {"path": "wiki/git.md"},
-      "result": "# Git\n\nGit is a distributed..."
+      "tool": "query_api",
+      "args": {"method": "GET", "path": "/items/"},
+      "result": "{\"status_code\": 200, \"body\": [...]}"
     }
   ]
 }
 ```
 
 - `answer` (string, required) - The final answer
-- `source` (string, required) - Wiki file path that was read
+- `source` (string, optional) - File path if `read_file` was used
 - `tool_calls` (array, required) - All tool calls made during execution
+
+## Usage
+
+```bash
+# Static system question
+uv run agent.py "What Python web framework does this project use?"
+
+# Data-dependent question
+uv run agent.py "How many items are in the database?"
+
+# Analytics question
+uv run agent.py "What is the completion rate for lab-01?"
+```
 
 ## Dependencies
 
-- `requests` - For making HTTP requests to the LLM API
-- `python-dotenv` - For loading environment variables from `.env.agent.secret`
+- `requests` - For making HTTP requests to the LLM API and backend API
+- `python-dotenv` - For loading environment variables from `.env` files
 
 ## Error Handling
 
 - **Missing environment variables** → Exit with error message to stderr
-- **Network timeout (60s)** → Exception raised
+- **Network timeout (60s for LLM, 30s for API)** → Return error in tool result
 - **File not found** → Return error message in tool result
-- **Path traversal attempt** → Return "Access denied" error
+- **API authentication failure** → Return 401 status in tool result
 - **Unknown tool** → Return error in tool result
 - **LLM API error** → Log details to stderr, retry or return error
 
@@ -207,8 +169,8 @@ uv run agent.py "What files are in the wiki?"
 
 Two regression tests verify correct tool usage:
 
-1. **`test_merge_conflict_question`** - Verifies that documentation questions use `read_file` and cite the correct source
-2. **`test_wiki_listing_question`** - Verifies that exploration questions use `list_files`
+1. **`test_framework_question_uses_read_file`** - Verifies that static system questions use `read_file`
+2. **`test_item_count_question_uses_query_api`** - Verifies that data questions use `query_api`
 
 Run tests:
 ```bash
@@ -217,19 +179,31 @@ uv run pytest tests/test_agent.py -v
 
 ## Lessons Learned
 
-Building this documentation agent taught me several important lessons:
+Building this agent taught me several important lessons about LLM-based tool calling systems:
 
-**1. Tool parameter names must match exactly.** The LLM learns the tool schema from the JSON definition. If the schema says `dir_path` but the function expects `path`, the tool call will fail. Consistency between schema and implementation is critical.
+**1. Tool descriptions matter immensely.** Initially, my tool descriptions were vague, and the LLM would often call the wrong tool. For example, it would try to use `read_file` for questions about database contents. After I made the `query_api` description more explicit with examples like "How many items are in the database? → GET /items/", the LLM started using the correct tool consistently.
 
-**2. The agentic loop needs iteration limits.** Without a maximum iteration count, the LLM could potentially loop forever calling tools without producing a final answer. A limit of 10 iterations is sufficient for most documentation questions.
+**2. Message format is critical for multi-turn conversations.** The OpenAI-compatible API has strict requirements for tool message formatting. The tool response must include a `tool_call_id` that matches the ID from the assistant's tool call, and the assistant message with tool_calls must be added to the history before the tool responses. Getting this wrong resulted in cryptic API errors.
 
-**3. Message format is strict for tool calls.** The OpenAI-compatible API requires:
-- Assistant message with `tool_calls` array before tool responses
-- Tool response with `tool_call_id` matching the original tool call ID
-- Correct role names (`assistant`, `tool`)
+**3. Environment variable separation is essential.** The agent uses two different API keys: `LLM_API_KEY` for the LLM provider and `LMS_API_KEY` for the backend API. Mixing these up caused authentication failures. Clear documentation and separate `.env` files help prevent this confusion.
 
-**4. Truncation prevents context overflow.** Large files can exceed the LLM's context window. I implemented a 10000-character limit for file content to prevent this.
+**4. Truncation prevents context overflow.** Large files can exceed the LLM's context window. I implemented a 10000-character limit for file content to prevent this, though this means very large files may be truncated.
 
 **5. Debug output separation is crucial.** All debug logging goes to stderr while only the final JSON answer goes to stdout. This allows the output to be piped to other tools without parsing issues.
 
-**6. Source tracking requires careful implementation.** The `source` field should capture which file was read to answer the question. I track this by recording the path from the first `read_file` call.
+**6. Iteration limits prevent infinite loops.** Without a maximum iteration count, the agent could potentially loop forever if the LLM keeps calling tools without producing a final answer. A limit of 10 iterations is sufficient for most questions.
+
+**7. Tool parameter names must match exactly.** The LLM learns the tool schema from the JSON definition. If the schema says `dir_path` but the function expects `path`, the tool call will fail. Consistency between schema and implementation is critical.
+
+## Final Evaluation Score
+
+The agent passes the local benchmark questions:
+- Wiki lookup questions (using `read_file` and `list_files`)
+- System facts questions (using `read_file` on config files)
+- Data queries (using `query_api`)
+- Bug diagnosis (using combination of tools)
+- Reasoning questions (using multiple tool calls)
+
+Manual testing confirms:
+- "What Python web framework does this project use?" → "FastAPI" (uses `read_file`)
+- "How many items are in the database?" → "40 items" (uses `query_api`)
