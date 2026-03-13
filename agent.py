@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Documentation Agent CLI - Calls an LLM with tools to read documentation.
+System Agent CLI - Calls an LLM with tools to answer questions.
 
 Tools:
 - read_file: Read a file from the project
 - list_files: List files in a directory
+- query_api: Query the backend LMS API
 
 Usage:
     uv run agent.py "Your question here"
@@ -31,18 +32,22 @@ PROJECT_ROOT = Path(__file__).parent
 
 
 def load_env():
-    """Load environment variables from .env.agent.secret."""
-    env_path = PROJECT_ROOT / ".env.agent.secret"
-    if not env_path.exists():
-        print(f"Error: {env_path} not found", file=sys.stderr)
-        sys.exit(1)
-
-    load_dotenv(env_path)
-
+    """Load environment variables from .env files."""
+    # Load LLM config from .env.agent.secret
+    agent_env = PROJECT_ROOT / ".env.agent.secret"
+    if agent_env.exists():
+        load_dotenv(agent_env)
+    
+    # Load LMS API key from .env.docker.secret
+    docker_env = PROJECT_ROOT / ".env.docker.secret"
+    if docker_env.exists():
+        load_dotenv(docker_env, override=False)
+    
+    # Validate required variables
     api_key = os.getenv("LLM_API_KEY")
     api_base = os.getenv("LLM_API_BASE")
     model = os.getenv("LLM_MODEL")
-
+    
     if not api_key:
         print("Error: LLM_API_KEY not set", file=sys.stderr)
         sys.exit(1)
@@ -52,7 +57,7 @@ def load_env():
     if not model:
         print("Error: LLM_MODEL not set", file=sys.stderr)
         sys.exit(1)
-
+    
     return api_key, api_base, model
 
 
@@ -139,6 +144,65 @@ def list_files(dir_path: str) -> str:
         return f"Error listing directory: {e}"
 
 
+def query_api(method: str, path: str, body: Optional[str] = None) -> str:
+    """
+    Query the backend Learning Management Service API.
+    
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, etc.)
+        path: API endpoint path (e.g., "/items/", "/analytics/completion-rate?lab=lab-01")
+        body: Optional JSON request body for POST/PUT requests
+    
+    Returns:
+        JSON string with "status_code" and "body" fields
+    """
+    lms_api_key = os.getenv("LMS_API_KEY")
+    api_base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
+    
+    if not lms_api_key:
+        return json.dumps({
+            "status_code": 0,
+            "body": {"error": "LMS_API_KEY not set in environment"},
+        })
+    
+    url = f"{api_base_url}{path}"
+    headers = {
+        "Authorization": f"Bearer {lms_api_key}",
+        "Content-Type": "application/json",
+    }
+    
+    try:
+        response = requests.request(
+            method=method.upper(),
+            url=url,
+            headers=headers,
+            json=json.loads(body) if body else None,
+            timeout=30,
+        )
+        
+        result = {
+            "status_code": response.status_code,
+            "body": response.json() if response.text else None,
+        }
+        return json.dumps(result)
+    
+    except requests.exceptions.Timeout:
+        return json.dumps({
+            "status_code": 0,
+            "body": {"error": "Request timed out"},
+        })
+    except requests.exceptions.RequestException as e:
+        return json.dumps({
+            "status_code": 0,
+            "body": {"error": str(e)},
+        })
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "status_code": response.status_code if 'response' in dir() else 0,
+            "body": {"error": f"Invalid JSON response: {e}"},
+        })
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas for LLM
 # ---------------------------------------------------------------------------
@@ -178,11 +242,38 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Query the backend LMS API to get live data from the database. Use this for questions about item counts, scores, analytics, completion rates, or any data that requires querying the running system. Examples: 'How many items are in the database?' -> GET /items/, 'What is the completion rate?' -> GET /analytics/completion-rate?lab=lab-01",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method (GET, POST, PUT, DELETE)",
+                        "enum": ["GET", "POST", "PUT", "DELETE"],
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API endpoint path, e.g., '/items/', '/analytics/completion-rate?lab=lab-01', '/analytics/scores?lab=lab-01'",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional JSON request body for POST/PUT requests",
+                    },
+                },
+                "required": ["method", "path"],
+            },
+        },
+    },
 ]
 
 TOOLS = {
     "read_file": read_file,
     "list_files": list_files,
+    "query_api": query_api,
 }
 
 
@@ -195,17 +286,22 @@ SYSTEM_PROMPT = """You are a helpful assistant for the Learning Management Servi
 You have access to these tools:
 1. read_file - Read a file from the project (use for documentation, source code, config files)
 2. list_files - List files in a directory (use to explore project structure)
+3. query_api - Query the live backend API (use for data questions like item counts, scores, analytics)
 
 Guidelines:
-- For questions about documentation → use list_files to find the relevant wiki file, then read_file to read it
-- Always cite your sources: mention the file path in your answer
-- Think step by step: first explore with list_files if needed, then read specific files with read_file
-- If you don't find the answer after exploring, say so honestly
+- For questions about project structure, code, or documentation → use read_file
+- For questions about live data (items in database, scores, analytics, completion rates) → use query_api
+- For questions about the system setup (framework, ports, configuration) → use read_file on pyproject.toml, docker-compose.yml, or backend/app files
+- When you need to find a file but don't know the path → use list_files to explore
+- Always use tools to gather information before answering
+- Cite your sources when referencing files or API responses
 
-When answering:
-- Provide a clear, concise answer based on what you read
-- Include the source file path (e.g., "wiki/git-workflow.md")
-- If referencing a specific section, mention the section heading"""
+Think step by step:
+1. Understand what the user is asking
+2. Decide which tool(s) to use
+3. Call the tool and examine the results
+4. If needed, call more tools based on the results
+5. Formulate a clear answer based on the tool results"""
 
 
 # ---------------------------------------------------------------------------

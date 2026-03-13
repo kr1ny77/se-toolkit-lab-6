@@ -1,7 +1,7 @@
 """
 Regression tests for agent.py
 
-Tests verify that the agent uses the correct tools for documentation questions.
+Tests verify that the agent uses the correct tools for different question types.
 """
 
 import json
@@ -24,64 +24,57 @@ def run_agent(question: str) -> dict:
     return json.loads(result.stdout)
 
 
-def test_merge_conflict_question():
+def test_framework_question_uses_read_file():
     """
-    Test that agent uses read_file and cites wiki/git.md as source.
+    Test that agent uses read_file tool for static system questions.
     
-    Question: "How do you resolve a merge conflict?"
-    Expected: Agent should call list_files then read_file on wiki/git.md
+    Question: "What Python web framework does this project use?"
+    Expected: Agent should call read_file on backend/app/main.py or pyproject.toml
     """
-    output = run_agent("How do you resolve a merge conflict?")
+    output = run_agent("What Python web framework does this project use?")
     
     # Check required fields
     assert "answer" in output, "Missing 'answer' field"
-    assert "source" in output, "Missing 'source' field"
     assert "tool_calls" in output, "Missing 'tool_calls' field"
     
     # Check that read_file was used
     tools_used = [tc.get("tool") for tc in output["tool_calls"]]
     assert "read_file" in tools_used, f"Expected read_file tool, got: {tools_used}"
     
-    # Check source contains wiki/git.md or wiki/git-workflow.md
-    source = output.get("source", "")
-    assert source and ("wiki/git.md" in source or "wiki/git-workflow.md" in source or "wiki/git-vscode.md" in source), \
-        f"Source should reference wiki git file, got: {source}"
-    
-    # Check answer mentions conflict resolution
+    # Check answer contains FastAPI
     answer_lower = output["answer"].lower()
-    assert "conflict" in answer_lower or "merge" in answer_lower, \
-        f"Answer should mention conflict resolution: {output['answer'][:200]}"
+    assert "fastapi" in answer_lower, f"Answer should mention FastAPI: {output['answer']}"
     
-    print(f"✓ Merge conflict question: source={source}, answer={output['answer'][:100]}...")
+    print(f"✓ Framework question: answer={output['answer'][:100]}...")
 
 
-def test_wiki_listing_question():
+def test_item_count_question_uses_query_api():
     """
-    Test that agent uses list_files to explore wiki directory.
+    Test that agent uses query_api tool for data-dependent questions.
     
-    Question: "What files are in the wiki?"
-    Expected: Agent should call list_files with dir_path='wiki'
+    Question: "How many items are in the database?"
+    Expected: Agent should call query_api GET /items/
     """
-    output = run_agent("What files are in the wiki?")
+    output = run_agent("How many items are in the database?")
     
     # Check required fields
     assert "answer" in output, "Missing 'answer' field"
     assert "tool_calls" in output, "Missing 'tool_calls' field"
     
-    # Check that list_files was used
+    # Check that query_api was used
     tools_used = [tc.get("tool") for tc in output["tool_calls"]]
-    assert "list_files" in tools_used, f"Expected list_files tool, got: {tools_used}"
+    assert "query_api" in tools_used, f"Expected query_api tool, got: {tools_used}"
     
-    # Check answer mentions wiki files
-    answer_lower = output["answer"].lower()
-    assert "wiki" in answer_lower or ".md" in answer_lower, \
-        f"Answer should mention wiki files: {output['answer'][:200]}"
+    # Check answer contains a number
+    import re
+    numbers = re.findall(r'\d+', output["answer"])
+    assert len(numbers) > 0, f"Answer should contain a number: {output['answer']}"
     
-    print(f"✓ Wiki listing question: answer={output['answer'][:100]}...")
+    print(f"✓ Item count question: answer={output['answer'][:100]}...")
 
 
 if __name__ == "__main__":
     print("Running agent regression tests...")
-    test_merge_conflict_question()
-    test_wiki_listing_question()
+    test_framework_question_uses_read_file()
+    test_item_count_question_uses_query_api()
     print("\nAll tests passed!")
