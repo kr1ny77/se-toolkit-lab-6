@@ -144,7 +144,7 @@ def list_files(dir_path: str) -> str:
         return f"Error listing directory: {e}"
 
 
-def query_api(method: str, path: str, body: Optional[str] = None) -> str:
+def query_api(method: str, path: str, body: Optional[str] = None, auth: bool = True) -> str:
     """
     Query the backend Learning Management Service API.
     
@@ -152,6 +152,7 @@ def query_api(method: str, path: str, body: Optional[str] = None) -> str:
         method: HTTP method (GET, POST, PUT, DELETE, etc.)
         path: API endpoint path (e.g., "/items/", "/analytics/completion-rate?lab=lab-01")
         body: Optional JSON request body for POST/PUT requests
+        auth: Whether to include authentication (default: True). Set to False to test unauthenticated behavior.
     
     Returns:
         JSON string with "status_code" and "body" fields
@@ -159,17 +160,19 @@ def query_api(method: str, path: str, body: Optional[str] = None) -> str:
     lms_api_key = os.getenv("LMS_API_KEY")
     api_base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
     
-    if not lms_api_key:
-        return json.dumps({
-            "status_code": 0,
-            "body": {"error": "LMS_API_KEY not set in environment"},
-        })
-    
     url = f"{api_base_url}{path}"
     headers = {
-        "Authorization": f"Bearer {lms_api_key}",
         "Content-Type": "application/json",
     }
+    
+    # Only add auth if requested
+    if auth:
+        if not lms_api_key:
+            return json.dumps({
+                "status_code": 0,
+                "body": {"error": "LMS_API_KEY not set in environment"},
+            })
+        headers["Authorization"] = f"Bearer {lms_api_key}"
     
     try:
         response = requests.request(
@@ -200,6 +203,63 @@ def query_api(method: str, path: str, body: Optional[str] = None) -> str:
         return json.dumps({
             "status_code": response.status_code if 'response' in dir() else 0,
             "body": {"error": f"Invalid JSON response: {e}"},
+        })
+
+
+def http_request(method: str, url: str, headers: Optional[str] = None, body: Optional[str] = None) -> str:
+    """
+    Make an HTTP request to any URL without automatic authentication.
+    Use this to test API behavior without auth headers, or to check status codes.
+    
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, etc.)
+        url: Full URL (e.g., "http://localhost:42002/items/")
+        headers: Optional JSON string of headers (e.g., '{"Content-Type": "application/json"}')
+        body: Optional JSON request body for POST/PUT requests
+    
+    Returns:
+        JSON string with "status_code", "headers", and "body" fields
+    """
+    request_headers = {}
+    if headers:
+        try:
+            request_headers = json.loads(headers)
+        except json.JSONDecodeError:
+            pass
+    
+    if body and "Content-Type" not in request_headers:
+        request_headers["Content-Type"] = "application/json"
+    
+    try:
+        response = requests.request(
+            method=method.upper(),
+            url=url,
+            headers=request_headers,
+            json=json.loads(body) if body else None,
+            timeout=30,
+        )
+        
+        result = {
+            "status_code": response.status_code,
+            "headers": dict(response.headers),
+            "body": response.json() if response.text else response.text,
+        }
+        return json.dumps(result)
+    
+    except requests.exceptions.Timeout:
+        return json.dumps({
+            "status_code": 0,
+            "body": {"error": "Request timed out"},
+        })
+    except requests.exceptions.RequestException as e:
+        return json.dumps({
+            "status_code": 0,
+            "body": {"error": str(e)},
+        })
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "status_code": response.status_code if 'response' in dir() else 0,
+            "body": {"raw": response.text[:500] if response else "", "error": f"Invalid JSON: {e}"},
         })
 
 
@@ -246,7 +306,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "query_api",
-            "description": "Query the backend LMS API to get live data from the database. Use this for questions about item counts, scores, analytics, completion rates, or any data that requires querying the running system. Examples: 'How many items are in the database?' -> GET /items/, 'What is the completion rate?' -> GET /analytics/completion-rate?lab=lab-01",
+            "description": "Query the backend LMS API to get live data from the database or test API behavior. Use this for questions about item counts, scores, analytics, completion rates, or to test API behavior with/without authentication. Examples: 'How many items are in the database?' -> GET /items/, 'What status code without auth?' -> GET /items/ with auth=false, 'What is the completion rate?' -> GET /analytics/completion-rate?lab=lab-01",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -262,6 +322,10 @@ TOOL_SCHEMAS = [
                     "body": {
                         "type": "string",
                         "description": "Optional JSON request body for POST/PUT requests",
+                    },
+                    "auth": {
+                        "type": "boolean",
+                        "description": "Whether to include authentication header (default: true). Set to false to test unauthenticated API behavior (e.g., check 401 status code).",
                     },
                 },
                 "required": ["method", "path"],
@@ -286,12 +350,13 @@ SYSTEM_PROMPT = """You are a helpful assistant for the Learning Management Servi
 You have access to these tools:
 1. read_file - Read a file from the project (use for documentation, source code, config files)
 2. list_files - List files in a directory (use to explore project structure)
-3. query_api - Query the live backend API (use for data questions like item counts, scores, analytics)
+3. query_api - Query the live backend API (use for data questions like item counts, scores, analytics, or to test API behavior with/without auth)
 
 Guidelines:
 - For questions about project structure, code, or documentation → use read_file
 - For questions about live data (items in database, scores, analytics, completion rates) → use query_api
 - For questions about the system setup (framework, ports, configuration) → use read_file on pyproject.toml, docker-compose.yml, or backend/app files
+- For questions about HTTP status codes or API behavior without auth → use query_api with auth=false
 - When you need to find a file but don't know the path → use list_files to explore
 - Always use tools to gather information before answering
 - Cite your sources when referencing files or API responses
