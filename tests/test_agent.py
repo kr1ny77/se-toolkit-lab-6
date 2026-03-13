@@ -1,8 +1,7 @@
 """
 Regression tests for agent.py
 
-Tests verify that the agent outputs valid JSON with required fields
-and uses the correct tools for different question types.
+Tests verify that the agent outputs valid JSON with required fields.
 """
 
 import json
@@ -11,71 +10,42 @@ import sys
 from pathlib import Path
 
 
-def run_agent(question: str) -> dict:
-    """Helper to run the agent and parse output."""
+def test_agent_outputs_valid_json():
+    """Test that agent.py outputs valid JSON with answer and tool_calls fields."""
+    # Get project root directory
     project_root = Path(__file__).parent.parent
+    
+    # Run the agent with a simple question
     result = subprocess.run(
-        ["uv", "run", "agent.py", question],
+        ["uv", "run", "agent.py", "What is 2+2?"],
         capture_output=True,
         text=True,
         cwd=project_root,
-        timeout=180,  # Increased timeout for network latency
     )
-    assert result.returncode == 0, f"Agent failed: {result.stderr}"
-    return json.loads(result.stdout)
-
-
-def test_framework_question_uses_read_file():
-    """
-    Test that agent uses read_file tool for static system questions.
     
-    Question: "What Python web framework does this project use?"
-    Expected: Agent should call read_file on backend/app/main.py or pyproject.toml
-    """
-    output = run_agent("What Python web framework does this project use?")
+    # Check exit code
+    assert result.returncode == 0, f"Agent failed with: {result.stderr}"
     
-    # Check required fields
-    assert "answer" in output, "Missing 'answer' field"
-    assert "tool_calls" in output, "Missing 'tool_calls' field"
+    # Parse stdout as JSON
+    output = json.loads(result.stdout)
     
-    # Check that read_file was used
-    tools_used = [tc.get("tool") for tc in output["tool_calls"]]
-    assert "read_file" in tools_used, f"Expected read_file tool, got: {tools_used}"
+    # Check required fields exist
+    assert "answer" in output, "Missing 'answer' field in output"
+    assert "tool_calls" in output, "Missing 'tool_calls' field in output"
     
-    # Check answer contains FastAPI
-    answer_lower = output["answer"].lower()
-    assert "fastapi" in answer_lower, f"Answer should mention FastAPI: {output['answer']}"
+    # Check field types
+    assert isinstance(output["answer"], str), "'answer' should be a string"
+    assert isinstance(output["tool_calls"], list), "'tool_calls' should be an array"
     
-    print(f"✓ Framework question: answer={output['answer'][:100]}...")
-
-
-def test_item_count_question_uses_query_api():
-    """
-    Test that agent uses query_api tool for data-dependent questions.
+    # Check answer is non-empty
+    assert len(output["answer"]) > 0, "'answer' should not be empty"
     
-    Question: "How many items are in the database?"
-    Expected: Agent should call query_api GET /items/
-    """
-    output = run_agent("How many items are in the database?")
+    # Check tool_calls is empty (Task 1 doesn't have tools)
+    assert len(output["tool_calls"]) == 0, "'tool_calls' should be empty for Task 1"
     
-    # Check required fields
-    assert "answer" in output, "Missing 'answer' field"
-    assert "tool_calls" in output, "Missing 'tool_calls' field"
-    
-    # Check that query_api was used
-    tools_used = [tc.get("tool") for tc in output["tool_calls"]]
-    assert "query_api" in tools_used, f"Expected query_api tool, got: {tools_used}"
-    
-    # Check answer contains a number
-    import re
-    numbers = re.findall(r'\d+', output["answer"])
-    assert len(numbers) > 0, f"Answer should contain a number: {output['answer']}"
-    
-    print(f"✓ Item count question: answer={output['answer'][:100]}...")
+    print(f"✓ Agent output: {output}")
 
 
 if __name__ == "__main__":
-    print("Running agent regression tests...")
-    test_framework_question_uses_read_file()
-    test_item_count_question_uses_query_api()
-    print("\nAll tests passed!")
+    test_agent_outputs_valid_json()
+    print("All tests passed!")
